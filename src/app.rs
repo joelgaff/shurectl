@@ -293,10 +293,27 @@ impl App {
 
     // ── Tab navigation ────────────────────────────────────────────────────────
 
+    fn mv7_led_focus(&self, prefer_meter: bool) -> Focus {
+        if self.device_state.led_live_meter.is_some()
+            && (prefer_meter || self.device_state.led_night_mode.is_none())
+        {
+            Focus::LedLiveMeter
+        } else {
+            Focus::LedNightMode
+        }
+    }
+
     /// Returns true when a tab does not exist on this model at all (Reverb
     /// everywhere but the MV7+, LED on models without LED settings). Hidden tabs
     /// are left out of the tab bar entirely.
     pub fn is_tab_hidden(&self, tab: Tab) -> bool {
+        if tab == Tab::Led
+            && self.device_model == DeviceModel::Mv7
+            && self.device_state.led_live_meter.is_none()
+            && self.device_state.led_night_mode.is_none()
+        {
+            return true;
+        }
         matches!(
             (tab, self.device_model),
             (
@@ -378,6 +395,12 @@ impl App {
         } else if (self.device_state.mode != mode_before
             && matches!(self.active_tab, Tab::Main | Tab::Eq | Tab::Dynamics))
             || (self.active_tab == Tab::Eq && eq_focus_hidden)
+            || (self.active_tab == Tab::Led
+                && match self.focus {
+                    Focus::LedLiveMeter => self.device_state.led_live_meter.is_none(),
+                    Focus::LedNightMode => self.device_state.led_night_mode.is_none(),
+                    _ => false,
+                })
         {
             self.reset_focus_for_tab();
         }
@@ -472,7 +495,7 @@ impl App {
                 InputMode::Manual => Focus::Limiter,
             },
             (Tab::Reverb, _) => Focus::ReverbOutput,
-            (Tab::Led, DeviceModel::Mv7) => Focus::LedLiveMeter,
+            (Tab::Led, DeviceModel::Mv7) => self.mv7_led_focus(true),
             (Tab::Led, _) => Focus::LedBehavior,
             (Tab::Presets, _) => Focus::PresetName(0),
             (Tab::Info, model) if model.has_device_rename() => Focus::DeviceName,
@@ -714,8 +737,8 @@ impl App {
             (Tab::Eq, _, DeviceModel::Mv7, _) => Focus::EqPreset,
             (Tab::Dynamics, Focus::Limiter, DeviceModel::Mv7, _) => Focus::Compressor,
             (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Limiter,
-            (Tab::Led, Focus::LedLiveMeter, DeviceModel::Mv7, _) => Focus::LedNightMode,
-            (Tab::Led, _, DeviceModel::Mv7, _) => Focus::LedLiveMeter,
+            (Tab::Led, Focus::LedLiveMeter, DeviceModel::Mv7, _) => self.mv7_led_focus(false),
+            (Tab::Led, _, DeviceModel::Mv7, _) => self.mv7_led_focus(true),
 
             // ── Reverb tab (MV7+ only)
             (Tab::Reverb, Focus::ReverbOutput, _, _) => Focus::ReverbMonitor,
@@ -958,8 +981,8 @@ impl App {
             (Tab::Eq, _, DeviceModel::Mv7, _) => Focus::EqPreset,
             (Tab::Dynamics, Focus::Compressor, DeviceModel::Mv7, _) => Focus::Limiter,
             (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Compressor,
-            (Tab::Led, Focus::LedNightMode, DeviceModel::Mv7, _) => Focus::LedLiveMeter,
-            (Tab::Led, _, DeviceModel::Mv7, _) => Focus::LedNightMode,
+            (Tab::Led, Focus::LedNightMode, DeviceModel::Mv7, _) => self.mv7_led_focus(true),
+            (Tab::Led, _, DeviceModel::Mv7, _) => self.mv7_led_focus(false),
 
             // ── Reverb tab reverse (MV7+ only)
             (Tab::Reverb, Focus::ReverbOutput, _, _) => Focus::ReverbIntensity,
@@ -1409,16 +1432,14 @@ impl App {
                 Some(DeviceAction::SetEqPreset(self.device_state.eq_preset))
             }
             Focus::LedLiveMeter => {
-                self.device_state.led_live_meter = !self.device_state.led_live_meter;
-                Some(DeviceAction::SetLedLiveMeter(
-                    self.device_state.led_live_meter,
-                ))
+                let value = self.device_state.led_live_meter.as_mut()?;
+                *value = !*value;
+                Some(DeviceAction::SetLedLiveMeter(*value))
             }
             Focus::LedNightMode => {
-                self.device_state.led_night_mode = !self.device_state.led_night_mode;
-                Some(DeviceAction::SetLedNightMode(
-                    self.device_state.led_night_mode,
-                ))
+                let value = self.device_state.led_night_mode.as_mut()?;
+                *value = !*value;
+                Some(DeviceAction::SetLedNightMode(*value))
             }
             Focus::PresetActions(i) => {
                 if self.presets[i].is_some() {
