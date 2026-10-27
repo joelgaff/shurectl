@@ -39,6 +39,7 @@ mod firmware;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod harness;
+mod json_cli;
 mod meter;
 mod mouse;
 mod presets;
@@ -68,6 +69,20 @@ use device::{Live, ShureDevice};
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
 use protocol::{DeviceModel, InputMode, format_gain};
+
+/// Upstream's one-shot flags, which --state, --set and --follow (this fork's,
+/// in `json_cli.rs`) don't combine with.
+const SHAPED_ONE_SHOTS: [&str; 9] = [
+    "json",
+    "mute",
+    "preset",
+    "mode",
+    "gain",
+    "monitor_mix",
+    "playback_mix",
+    "list",
+    "demo",
+];
 
 #[derive(Parser)]
 #[command(
@@ -135,6 +150,25 @@ struct Cli {
           value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
     playback_mix: Option<Amount>,
 
+    /// Print every setting, the device info and the presets as one line of
+    /// JSON and exit, for status bars and desktop widgets. A different shape
+    /// from --json: the one omarchy-shurectl reads. With --set, apply first.
+    #[arg(long, conflicts_with_all = SHAPED_ONE_SHOTS)]
+    state: bool,
+
+    /// Change any setting without the TUI, as KEY=VALUE (repeatable, applied
+    /// in order), then print what --state prints. `--set help` lists the keys.
+    #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append,
+          conflicts_with_all = SHAPED_ONE_SHOTS)]
+    set: Vec<String>,
+
+    /// Keep the device open: print what --state prints whenever a setting
+    /// changes (polling every MS milliseconds, default 500), and apply
+    /// KEY=VALUE lines read from stdin, so one process serves a widget.
+    #[arg(long, value_name = "MS", num_args = 0..=1, default_missing_value = "500",
+          conflicts_with_all = SHAPED_ONE_SHOTS)]
+    follow: Option<u64>,
+
     /// Maintainers only: drive the app headlessly with JSON lines on stdin and
     /// stdout, for tests/e2e.rs and agent QA. Needs --demo MODEL or
     /// --fake-device MODEL; never opens real hardware.
@@ -161,6 +195,10 @@ fn main() -> Result<()> {
             _ => anyhow::bail!("--qa needs --demo MODEL or --fake-device MODEL"),
         };
         return harness::run_qa(parse_demo_model(model)?, fake);
+    }
+
+    if cli.state || !cli.set.is_empty() || cli.follow.is_some() {
+        return json_cli::run(cli.device.as_deref(), &cli.set, cli.follow);
     }
 
     let one_shot = cli::Request {
