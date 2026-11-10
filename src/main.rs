@@ -892,6 +892,14 @@ fn apply_action(
         app.report_unavailable_mute_button();
         return;
     }
+    if (matches!(action, DeviceAction::SetLedLiveMeter(_))
+        && app.device_state.led_live_meter.is_none())
+        || (matches!(action, DeviceAction::SetLedNightMode(_))
+            && app.device_state.led_night_mode.is_none())
+    {
+        app.set_err("This LED setting is unavailable on this device.");
+        return;
+    }
     let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
@@ -1637,9 +1645,9 @@ fn apply_preset_to_state(
     slot.apply_to_device_state(state);
     // A balance and a Mic Level share the field but not the meaning: keep the
     // device's own Monitor Mix rather than translate one into the other.
-    let monitor_mix_applies = !slot
+    let monitor_mix_applies = slot
         .monitor_mix_is_mic_level
-        .is_some_and(|mic_level| mic_level != model.has_playback_mix());
+        .is_none_or(|mic_level| mic_level == model.has_playback_mix());
     if !monitor_mix_applies {
         state.monitor_mix = monitor_mix_before;
     }
@@ -2676,8 +2684,8 @@ mod tests {
             led_live_middle_rgb: [10, 11, 12],
             led_live_interior_rgb: [13, 14, 15],
             eq_preset: EqPreset::HighPass,
-            led_live_meter: false,
-            led_night_mode: true,
+            led_live_meter: Some(false),
+            led_night_mode: Some(true),
             ..DeviceState::default()
         }
     }

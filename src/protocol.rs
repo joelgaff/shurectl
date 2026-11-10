@@ -747,10 +747,10 @@ pub struct DeviceState {
     // ── MV7 (original) exclusive fields ──────────────────────────────────────
     /// EQ preset (High Pass and Presence Boost switches).
     pub eq_preset: EqPreset,
-    /// LEDs show the live input level.
-    pub led_live_meter: bool,
-    /// LEDs are dimmed.
-    pub led_night_mode: bool,
+    /// LEDs show the live input level; None when unsupported or unread.
+    pub led_live_meter: Option<bool>,
+    /// LEDs are dimmed; None when unsupported or unread.
+    pub led_night_mode: Option<bool>,
 
     /// USB descriptor serial number, populated after connection.
     pub serial_number: String,
@@ -815,8 +815,8 @@ impl Default for DeviceState {
             led_live_interior_rgb: [0x00, 0x00, 0x00],
             // MV7 defaults as observed on firmware 0.0.52.0.
             eq_preset: EqPreset::Flat,
-            led_live_meter: true,
-            led_night_mode: false,
+            led_live_meter: Some(true),
+            led_night_mode: Some(false),
             serial_number: String::from("Unknown"),
             device_name: String::from("Unknown"),
             firmware_version: String::from("Unknown"),
@@ -3072,6 +3072,10 @@ pub mod mv7_text {
     }
 
     impl TextCommand {
+        pub fn is_optional_led_query(&self) -> bool {
+            matches!(self.line.as_str(), METER_MODE | DIM_MODE)
+        }
+
         fn named(name: &str, value: Option<&str>) -> Self {
             let line = match value {
                 Some(value) => format!("{name} {value}"),
@@ -3237,10 +3241,31 @@ pub mod mv7_text {
             add("Compressor", |state| set_compressor(state.compressor));
             add("EQ", |state| set_eq(state.eq_preset));
         }
-        add("Live Meter", |state| set_live_meter(state.led_live_meter));
-        add("Night Mode", |state| set_night_mode(state.led_night_mode));
-        if monitor_mix {
-            add("Monitor Mix", |state| set_monitor_mix(state.monitor_mix));
+
+        for (label, from, to, set) in [
+            (
+                "Live Meter",
+                current.led_live_meter,
+                target.led_live_meter,
+                set_live_meter as fn(bool) -> TextCommand,
+            ),
+            (
+                "Night Mode",
+                current.led_night_mode,
+                target.led_night_mode,
+                set_night_mode,
+            ),
+        ] {
+            if let (Some(from), Some(to)) = (from, to)
+                && from != to
+            {
+                changes.push((label, set(to)));
+            }
+        }
+        if monitor_mix
+            && set_monitor_mix(current.monitor_mix) != set_monitor_mix(target.monitor_mix)
+        {
+            changes.push(("Monitor Mix", set_monitor_mix(target.monitor_mix)));
         }
         changes
     }
@@ -3381,18 +3406,37 @@ pub mod mv7_text {
 
     // ── Reply decoding ────────────────────────────────────────────────────────
 
+    pub fn unsupported_reply(line: &str, command: &str) -> bool {
+        line.strip_prefix("No such command: ") == Some(command)
+    }
+
+    fn apply_optional_on_off(value: &str, target: &mut Option<bool>) -> bool {
+        let mut parsed = false;
+        if !apply_on_off(value, &mut parsed) {
+            return false;
+        }
+        *target = Some(parsed);
+        true
+    }
+
     /// Find the reply to a command in the text read so far: the first complete
     /// line that starts with `reply_prefix` or is [`FAILED_REPLY`] or
-    /// [`LOCKED_REPLY`]. Other lines (help text, the gain line a mode change
-    /// sends first) are skipped. Returns `None` until it arrives.
+    /// [`LOCKED_REPLY`], or explicitly says the command is unsupported. Other
+    /// lines (help text, the gain line a mode change sends first) are skipped.
+    /// Returns `None` until it arrives.
     pub fn find_reply<'a>(text: &'a str, reply_prefix: &str) -> Option<&'a str> {
         let complete = &text[..text.rfind('\n')?];
-        complete
-            .split('\n')
-            .map(|line| line.trim_end_matches('\r'))
-            .find(|line| {
-                line.starts_with(reply_prefix) || *line == FAILED_REPLY || *line == LOCKED_REPLY
-            })
+        let mut unsupported = None;
+        for line in complete.split('\n').map(|line| line.trim_end_matches('\r')) {
+            if unsupported_reply(line, reply_prefix.trim_end_matches('=')) {
+                unsupported = Some(line);
+            } else if line == FAILED_REPLY {
+                return Some(unsupported.unwrap_or(line));
+            } else if line.starts_with(reply_prefix) || line == LOCKED_REPLY {
+                return Some(line);
+            }
+        }
+        None
     }
 
     /// Decode one reply line into `state`. Returns `false` if the line is not a
@@ -3427,8 +3471,8 @@ pub mod mv7_text {
                 .parse::<u8>()
                 .is_ok_and(|number| apply_dsp_mode(number, state)),
             LOCK => apply_on_off(value, &mut state.locked),
-            METER_MODE => apply_on_off(value, &mut state.led_live_meter),
-            DIM_MODE => apply_on_off(value, &mut state.led_night_mode),
+            METER_MODE => apply_optional_on_off(value, &mut state.led_live_meter),
+            DIM_MODE => apply_optional_on_off(value, &mut state.led_night_mode),
             FW_VERSION => {
                 state.firmware_version = value.to_string();
                 true
@@ -3540,12 +3584,19 @@ pub mod mv7_text {
                     set_gain(state.gain_tenths),
                     set_dsp_mode(state.mode, state.auto_position, state.auto_tone),
                     set_lock(state.locked),
-                    set_live_meter(state.led_live_meter),
-                    set_night_mode(state.led_night_mode),
                     set_compressor(state.compressor),
                     set_eq(state.eq_preset),
                     set_monitor_mix(state.monitor_mix),
                 ] {
+                    shell.store(&command.line);
+                }
+                for command in [
+                    state.led_live_meter.map(set_live_meter),
+                    state.led_night_mode.map(set_night_mode),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     shell.store(&command.line);
                 }
                 shell
@@ -3588,7 +3639,9 @@ pub mod mv7_text {
                     },
                     (name, None) => match self.values.get(name) {
                         Some(value) => format!("{name}={value}"),
-                        None => FAILED_REPLY.into(),
+                        None => format!(
+                            "No such command: {name}\nEnter 'help' or '?' for help.\n[Failed]"
+                        ),
                     },
                     (INPUT_GAIN, Some(value)) => self.set_gain(value),
                     (DSP_MODE, Some(value)) => match value.parse::<u8>() {
@@ -3848,9 +3901,9 @@ pub mod mv7_text {
             assert!(apply_reply("lock=on", &mut state));
             assert!(state.locked);
             assert!(apply_reply("meterMode=off", &mut state));
-            assert!(!state.led_live_meter);
+            assert_eq!(state.led_live_meter, Some(false));
             assert!(apply_reply("dimMode=on", &mut state));
-            assert!(state.led_night_mode);
+            assert_eq!(state.led_night_mode, Some(true));
             assert!(apply_reply("fwVersion=0.0.52.0", &mut state));
             assert_eq!(state.firmware_version, "0.0.52.0");
             assert!(apply_reply("serialNum=2DDC3002222E2B00", &mut state));
@@ -3919,6 +3972,22 @@ pub mod mv7_text {
         }
 
         #[test]
+        fn unsupported_reply_waits_for_the_complete_failure_trailer() {
+            let reply = "No such command: meterMode\nEnter 'help' or '?' for help.\n[Failed]\n";
+            for end in 0..reply.len() {
+                assert_eq!(
+                    find_reply(&reply[..end], "meterMode="),
+                    None,
+                    "prefix {end}"
+                );
+            }
+            assert_eq!(
+                find_reply(reply, "meterMode="),
+                Some("No such command: meterMode")
+            );
+        }
+
+        #[test]
         fn find_reply_skips_unrelated_lines_and_waits_for_a_full_line() {
             assert_eq!(find_reply("micMute=o", "micMute="), None);
             assert_eq!(find_reply("micMute=on\n", "micMute="), Some("micMute=on"));
@@ -3931,6 +4000,14 @@ pub mod mv7_text {
                     "No such command: x\nEnter 'help' or '?' for help.\n[Failed]\n",
                     "x="
                 ),
+                Some("No such command: x")
+            );
+            assert_eq!(
+                find_reply("No such command: meterMode\n", "meterMode="),
+                None
+            );
+            assert_eq!(
+                find_reply("No such command: other\n[Failed]\n", "meterMode="),
                 Some(FAILED_REPLY)
             );
             assert_eq!(find_reply("Locked\n", "inputGain="), Some(LOCKED_REPLY));
@@ -3992,7 +4069,7 @@ pub mod mv7_text {
             // Mute is live state, which a preset load leaves alone.
             target.muted = true;
             target.eq_preset = EqPreset::HighPass;
-            target.led_night_mode = true;
+            target.led_night_mode = Some(true);
             let changes = setting_changes(&current, &target, true);
             assert_eq!(labels(&changes), ["EQ", "Night Mode", "Monitor Mix"]);
             assert_eq!(changes[2].1, set_monitor_mix(74));
@@ -4022,7 +4099,7 @@ pub mod mv7_text {
             let mut target = manual_state();
             target.gain_tenths = 300;
             target.compressor = CompressorPreset::Heavy;
-            target.led_night_mode = true;
+            target.led_night_mode = Some(true);
             assert_eq!(
                 labels(&setting_changes(&current, &target, true)),
                 ["Night Mode"]

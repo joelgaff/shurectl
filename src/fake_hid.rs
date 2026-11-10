@@ -548,7 +548,9 @@ impl FakeState {
             return;
         }
         let line = String::from_utf8_lossy(&text).into_owned();
-        let reply = if self.faults.refuse > 0 {
+        let reply = if self.faults.refused_get.as_deref() == Some(line.as_str()) {
+            mv7_text::FAILED_REPLY.to_string()
+        } else if self.faults.refuse > 0 {
             self.faults.refuse -= 1;
             mv7_text::FAILED_REPLY.to_string()
         } else {
@@ -978,8 +980,8 @@ mod tests {
             led_live_middle_rgb: [10, 11, 12],
             led_live_interior_rgb: [13, 14, 15],
             eq_preset: protocol::EqPreset::PresenceBoost,
-            led_live_meter: false,
-            led_night_mode: true,
+            led_live_meter: Some(false),
+            led_night_mode: Some(true),
             ..FakeDevice::seed_state(model)
         };
         for (band, gain_db) in state.eq_bands.iter_mut().zip([-80, -20, 20, 40, 60]) {

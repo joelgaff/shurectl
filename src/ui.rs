@@ -1449,8 +1449,8 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
         SummaryRow::ReverbMonitor => on_off(ds.reverb_monitoring),
         SummaryRow::ReverbType => text(ds.reverb_type.to_string()),
         SummaryRow::ReverbIntensity => text(format!("{}%", ds.reverb_intensity)),
-        SummaryRow::LiveMeter => on_off(ds.led_live_meter),
-        SummaryRow::NightMode => on_off(ds.led_night_mode),
+        SummaryRow::LiveMeter => on_off(ds.led_live_meter?),
+        SummaryRow::NightMode => on_off(ds.led_night_mode?),
     };
     Some(span)
 }
@@ -2711,22 +2711,16 @@ fn draw_mv7_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
         .split(area);
     let on_off = |on: bool| if on { "ON" } else { "OFF" };
 
-    draw_led_cycle_row(
-        f,
-        app,
-        Focus::LedLiveMeter,
-        "Live Meter",
-        on_off(ds.led_live_meter),
-        sections[0],
-    );
-    draw_led_cycle_row(
-        f,
-        app,
-        Focus::LedNightMode,
-        "Night Mode",
-        on_off(ds.led_night_mode),
-        sections[1],
-    );
+    for (index, (focus, label, value)) in [
+        (Focus::LedLiveMeter, "Live Meter", ds.led_live_meter),
+        (Focus::LedNightMode, "Night Mode", ds.led_night_mode),
+    ]
+    .into_iter()
+    .filter_map(|(focus, label, value)| value.map(|value| (focus, label, value)))
+    .enumerate()
+    {
+        draw_led_cycle_row(f, app, focus, label, on_off(value), sections[index]);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3238,7 +3232,18 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  Monitor Mix  : ", "0–100%"),
             ("  Auto Level   : ", "On / Off"),
             ("  Config Lock  : ", "On / Off"),
-            ("  LED Panel    : ", "Live Meter / Night Mode"),
+            (
+                "  LED Panel    : ",
+                match (
+                    app.device_state.led_live_meter,
+                    app.device_state.led_night_mode,
+                ) {
+                    (Some(_), Some(_)) => "Live Meter / Night Mode",
+                    (Some(_), None) => "Live Meter",
+                    (None, Some(_)) => "Night Mode",
+                    (None, None) => "Unavailable",
+                },
+            ),
         ],
         DeviceModel::Mv7Plus => &[
             ("  Denoiser     : ", "On / Off"),

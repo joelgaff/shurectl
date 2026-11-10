@@ -408,6 +408,14 @@ impl ShureDevice {
             let text: Vec<u8> = buf[..n].iter().copied().filter(|&b| b != 0).collect();
             received.push_str(&String::from_utf8_lossy(&text));
             if let Some(reply) = mv7_text::find_reply(&received, &command.reply_prefix) {
+                if !mv7_text::unsupported_reply(reply, &command.line)
+                    && mv7_text::unsupported_reply(
+                        reply,
+                        command.reply_prefix.trim_end_matches('='),
+                    )
+                {
+                    return Ok(mv7_text::FAILED_REPLY.to_string());
+                }
                 return Ok(reply.to_string());
             }
         }
@@ -570,10 +578,20 @@ impl ShureDevice {
     }
 
     fn get_state_mv7(&self, readback: &mut Readback) -> Result<()> {
+        readback.state.led_live_meter = None;
+        readback.state.led_night_mode = None;
         for command in mv7_text::state_queries() {
             let reply = self.send_text(&command)?;
             let applied = mv7_text::apply_reply(&reply, &mut readback.state);
-            readback.record(applied, Need::Required, || {
+            // Original MV7 firmware 0.0.27.13 rejects these queries (hardware probe, 2026-10-26).
+            let need = if command.is_optional_led_query()
+                && mv7_text::unsupported_reply(&reply, &command.line)
+            {
+                Need::Optional
+            } else {
+                Need::Required
+            };
+            readback.record(applied, need, || {
                 format!("{reply:?} in reply to {:?}", command.line)
             });
         }
@@ -1537,6 +1555,47 @@ mod tests {
             .expect("only an optional query unanswered");
         assert_eq!(readback.state.gain_tenths, 240);
         assert_eq!(readback.skipped.len(), 1);
+    }
+
+    #[test]
+    fn mv7_unsupported_led_queries_leave_audio_readable() {
+        use crate::fake_hid::FakeDevice;
+        let state = DeviceState {
+            led_live_meter: None,
+            led_night_mode: None,
+            gain_tenths: 195,
+            ..DeviceState::default()
+        };
+        let fake = FakeDevice::with_state(DeviceModel::Mv7, state);
+        let read = fake.open().get_state().expect("audio readback");
+        assert_eq!(read.state.gain_tenths, 195);
+        assert_eq!(read.state.led_live_meter, None);
+        assert_eq!(read.state.led_night_mode, None);
+        assert_eq!(read.skipped.len(), 2);
+        fake.faults_mut(|faults| faults.refused_get = Some("inputGain".into()));
+        assert!(fake.open().get_state().is_err());
+        fake.faults_mut(|faults| {
+            faults.refused_get = None;
+            faults.fail_io = true;
+        });
+        assert!(
+            fake.open()
+                .get_state()
+                .err()
+                .unwrap()
+                .downcast_ref::<Disconnected>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn mv7_generic_led_refusal_still_fails_readback() {
+        use crate::fake_hid::FakeDevice;
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        for command in ["meterMode", "dimMode"] {
+            fake.faults_mut(|faults| faults.refused_get = Some(command.into()));
+            assert!(fake.open().get_state().is_err(), "{command}");
+        }
     }
 
     /// A readback that fails names the setting, so a user's report says which.

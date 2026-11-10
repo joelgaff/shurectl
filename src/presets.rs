@@ -209,8 +209,8 @@ impl PresetSlot {
                 slot.save_auto_position_and_tone(state);
                 slot.compressor = Some(SerCompressorPreset::from(state.compressor));
                 slot.eq_preset = Some(SerEqPreset::from(state.eq_preset));
-                slot.led_live_meter = Some(state.led_live_meter);
-                slot.led_night_mode = Some(state.led_night_mode);
+                slot.led_live_meter = state.led_live_meter;
+                slot.led_night_mode = state.led_night_mode;
             }
             DeviceModel::Mv7Plus => {
                 slot.save_limiter_and_compressor(state);
@@ -341,8 +341,12 @@ impl PresetSlot {
         load_saved(&mut state.led_live_middle_rgb, self.led_live_middle_rgb);
         load_saved(&mut state.led_live_interior_rgb, self.led_live_interior_rgb);
         load_saved(&mut state.eq_preset, self.eq_preset.map(EqPreset::from));
-        load_saved(&mut state.led_live_meter, self.led_live_meter);
-        load_saved(&mut state.led_night_mode, self.led_night_mode);
+        if let Some(current) = state.led_live_meter.as_mut() {
+            load_saved(current, self.led_live_meter);
+        }
+        if let Some(current) = state.led_night_mode.as_mut() {
+            load_saved(current, self.led_night_mode);
+        }
     }
 
     /// The preset's gain formatted the same way as everywhere else in the UI.
@@ -1502,14 +1506,14 @@ mod tests {
         assert_eq!(loaded.led_night_mode, None);
         let mut mic = DeviceState {
             eq_preset: EqPreset::PresenceBoost,
-            led_live_meter: false,
-            led_night_mode: true,
+            led_live_meter: Some(false),
+            led_night_mode: Some(true),
             ..DeviceState::default()
         };
         loaded.apply_to_device_state(&mut mic);
         assert_eq!(mic.eq_preset, EqPreset::PresenceBoost);
-        assert!(!mic.led_live_meter);
-        assert!(mic.led_night_mode);
+        assert_eq!(mic.led_live_meter, Some(false));
+        assert_eq!(mic.led_night_mode, Some(true));
     }
 
     fn mv7_example_state() -> DeviceState {
@@ -1519,8 +1523,8 @@ mod tests {
             monitor_mix: 74,
             compressor: CompressorPreset::Light,
             eq_preset: EqPreset::HighPassPresenceBoost,
-            led_live_meter: false,
-            led_night_mode: true,
+            led_live_meter: Some(false),
+            led_night_mode: Some(true),
             ..DeviceState::default()
         }
     }
@@ -1538,8 +1542,8 @@ mod tests {
         assert_eq!(target.monitor_mix, 74);
         assert_eq!(target.compressor, CompressorPreset::Light);
         assert_eq!(target.eq_preset, EqPreset::HighPassPresenceBoost);
-        assert!(!target.led_live_meter);
-        assert!(target.led_night_mode);
+        assert_eq!(target.led_live_meter, Some(false));
+        assert_eq!(target.led_night_mode, Some(true));
     }
 
     #[test]

@@ -188,10 +188,14 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Mute Button (Works / Ignored) | — | — | ✓ | ✓ | — | ✓, firmware 1.4.0+ |
 | **Other tabs** | | | | | | |
 | Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | — | ✓ |
-| LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
+| LED Panel | — | — | — | — | Live Meter, Night Mode (when available) | Behavior, Brightness, Theme, custom RGB |
 | Rename device (Info tab) | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | Factory Reset (Info tab) | — | ✓ | — | ✓ | — | ✓ |
 | Firmware update check (Info tab) | — | ✓ | ✓ | ✓ | — | ✓ |
+
+The original MV7 reported both LED commands as unsupported with internal firmware
+0.0.27.13 and package version 1.2.19 in a hardware probe on 2026-10-26. Those controls stay hidden when unavailable;
+audio settings remain usable.
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
 firmware version), `--mute`, `--preset`, and `--demo`.

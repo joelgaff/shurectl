@@ -240,9 +240,9 @@ fn parse_set(app: &App, arg: &str) -> Result<Vec<DeviceAction>> {
         "mute" => DeviceAction::SetMute(b(st.muted)?),
         "gain_lock" => DeviceAction::SetMv6GainLock(b(st.mv6_gain_locked)?),
         "lock" => DeviceAction::SetLock(b(st.locked)?),
-        "mute_button_disabled" => {
-            DeviceAction::SetMv6MuteBtnDisable(b(st.mute_btn_disabled.unwrap_or(false))?)
-        }
+        "mute_button_disabled" => DeviceAction::SetMv6MuteBtnDisable(b(st
+            .mute_btn_disabled
+            .ok_or_else(|| anyhow!("mute_button_disabled is unavailable"))?)?),
         "monitor_mix" => DeviceAction::SetMonitorMix(parse_int(key, value, 0, 100)? as u8),
         "playback_mix" => DeviceAction::SetMv7PlaybackMix(parse_int(key, value, 0, 100)? as u8),
         "hpf" => DeviceAction::SetHpf(pick(key, value, HPFS)?),
@@ -266,8 +266,12 @@ fn parse_set(app: &App, arg: &str) -> Result<Vec<DeviceAction>> {
         "eq" => DeviceAction::SetEqEnable(b(st.eq_enabled)?),
         "eq_flatten" => DeviceAction::FlattenEq,
         "eq_preset" => DeviceAction::SetEqPreset(pick(key, value, EQ_PRESETS)?),
-        "led_live_meter" => DeviceAction::SetLedLiveMeter(b(st.led_live_meter)?),
-        "led_night_mode" => DeviceAction::SetLedNightMode(b(st.led_night_mode)?),
+        "led_live_meter" => DeviceAction::SetLedLiveMeter(b(st
+            .led_live_meter
+            .ok_or_else(|| anyhow!("led_live_meter is unavailable"))?)?),
+        "led_night_mode" => DeviceAction::SetLedNightMode(b(st
+            .led_night_mode
+            .ok_or_else(|| anyhow!("led_night_mode is unavailable"))?)?),
         "reverb_output" => DeviceAction::SetMv7ReverbOutput(b(st.reverb_on_output)?),
         "reverb_monitoring" => DeviceAction::SetMv7ReverbMonitor(b(st.reverb_monitoring)?),
         "reverb_type" => DeviceAction::SetMv7ReverbPreset(pick(key, value, REVERBS)?),
@@ -367,8 +371,8 @@ fn mirror(state: &mut DeviceState, action: &DeviceAction) {
         SetMv7LedLiveMiddleRgb(c) => state.led_live_middle_rgb = *c,
         SetMv7LedLiveInteriorRgb(c) => state.led_live_interior_rgb = *c,
         SetEqPreset(p) => state.eq_preset = *p,
-        SetLedLiveMeter(l) => state.led_live_meter = *l,
-        SetLedNightMode(n) => state.led_night_mode = *n,
+        SetLedLiveMeter(l) => state.led_live_meter = Some(*l),
+        SetLedNightMode(n) => state.led_night_mode = Some(*n),
         // SetMicPreset: the mic applies its own settings; the refresh after the
         // writes picks them up. The rest change files or re-read the device.
         SetMicPreset(_) | SavePreset(_) | LoadPreset(_) | DeletePreset(_)
@@ -408,8 +412,8 @@ fn run_sets(app: &mut App, device: &mut Option<ShureDevice>, sets: &[String]) ->
                     }
                 }
             }
-            mirror(&mut app.device_state, &action);
             let before = app.device_state.clone();
+            mirror(&mut app.device_state, &action);
             crate::apply_action(app, device, action, Some(before));
             if app.status_is_error {
                 return false;
@@ -455,7 +459,9 @@ fn state_json(app: &App, connected: bool) -> Value {
         "mute_button": m.has_mute_button(),
         "reverb": is_mv7plus,
         "led": is_mv7plus,
-        "mv7_led": is_mv7,
+        "led_live_meter": is_mv7 && s.led_live_meter.is_some(),
+        "led_night_mode": is_mv7 && s.led_night_mode.is_some(),
+        "mv7_led": is_mv7 && (s.led_live_meter.is_some() || s.led_night_mode.is_some()),
         "factory_reset": app.supports_factory_reset(),
         "gain_max_db": f32::from(m.max_gain_tenths()) / 10.0,
         "gain_step_db": f32::from(m.gain_step_tenths()) / 10.0,
@@ -507,6 +513,7 @@ fn state_json(app: &App, connected: bool) -> Value {
     json!({
         "model": m.display_name(),
         "connected": connected,
+        "state_ready": !app.state_unread,
         "status": app.status_message,
         "error": app.status_is_error,
         "info": info,
@@ -520,8 +527,8 @@ fn state_json(app: &App, connected: bool) -> Value {
 /// connection, not the status line, which changes with every write.
 fn fingerprint(value: &Value) -> String {
     format!(
-        "{}|{}|{}",
-        value["connected"], value["state"], value["presets"]
+        "{}|{}|{}|{}",
+        value["connected"], value["state_ready"], value["state"], value["presets"]
     )
 }
 
@@ -685,6 +692,77 @@ fn follow(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_mute_button_is_rejected_before_mirroring() {
+        let mut app = mv7plus();
+        app.device_state.mute_btn_disabled = None;
+        assert!(!run_sets(
+            &mut app,
+            &mut None,
+            &["mute_button_disabled=true".into()]
+        ));
+        assert_eq!(app.device_state.mute_btn_disabled, None);
+    }
+
+    #[test]
+    fn rejected_set_restores_the_value_before_mirroring() {
+        let fake = crate::fake_hid::FakeDevice::new(DeviceModel::Mv7);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            ..App::default()
+        };
+        crate::load_initial_state(&mut app, device.as_ref());
+        let gain = app.device_state.gain_tenths;
+        fake.faults_mut(|faults| faults.refuse = 1);
+        assert!(!run_sets(&mut app, &mut device, &["gain=12".into()]));
+        assert_eq!(app.device_state.gain_tenths, gain);
+        assert!(state_json(&app, true)["state_ready"].as_bool().unwrap());
+        assert!(app.status_is_error);
+    }
+
+    #[test]
+    fn unsupported_leds_are_not_written_saved_or_shown() {
+        let fake = crate::fake_hid::FakeDevice::with_state(
+            DeviceModel::Mv7,
+            crate::protocol::DeviceState {
+                led_live_meter: None,
+                led_night_mode: None,
+                ..crate::protocol::DeviceState::default()
+            },
+        );
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            ..App::default()
+        };
+        crate::load_initial_state(&mut app, device.as_ref());
+        let start = fake.log_len();
+        for setting in ["led_live_meter=true", "led_night_mode=false"] {
+            assert!(!run_sets(&mut app, &mut device, &[setting.into()]));
+        }
+        assert_eq!(fake.log_len(), start);
+        assert!(app.is_tab_hidden(crate::app::Tab::Led));
+        let snapshot = state_json(&app, true);
+        assert_eq!(snapshot["state_ready"], true);
+        assert_eq!(snapshot["state"]["led_live_meter"], Value::Null);
+        assert_eq!(snapshot["features"]["mv7_led"], false);
+        let preset = presets::PresetSlot::from_device_state(
+            "test",
+            &crate::protocol::DeviceState::default(),
+            DeviceModel::Mv7,
+        );
+        let mut target = app.device_state.clone();
+        preset.apply_to_device_state(&mut target);
+        assert_eq!(target.led_live_meter, None);
+        assert_eq!(target.led_night_mode, None);
+        let saved = presets::PresetSlot::from_device_state("test", &target, DeviceModel::Mv7);
+        assert_eq!(saved.led_live_meter, None);
+        assert_eq!(saved.led_night_mode, None);
+        app.state_unread = true;
+        assert_eq!(state_json(&app, true)["state_ready"], false);
+    }
 
     fn mv7plus() -> App {
         App {
